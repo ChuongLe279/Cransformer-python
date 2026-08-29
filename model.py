@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 import torch.nn as nn
 import math
@@ -26,7 +28,7 @@ class PositionalEncoding(nn.Module):
         # Vector shape (seq_len,)
         position = torch.arange(seq_length, dtype=torch.float).unsqueeze(1)
         # Vector shape (d_model,)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)) # (d_model / 2)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
         # Applying pe on even indices
         pe[:, ::2] = torch.sin(position * div_term)
         # Applying pe on odd indices
@@ -35,48 +37,25 @@ class PositionalEncoding(nn.Module):
         pe = pe.unsqueeze(0) # (1, seq_len, d_model)
         # Register the positional encoding as a buffer
         self.register_buffer('pe', pe)
-        self.position = position
-        self.div_term = div_term
 
     def forward(self, x):
-        x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) #type: ignore # (batch, seq_len, d_model) 
+        x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) # type: ignore # (batch, seq_len, d_model) 
         return self.dropout(x)
-    
+
+class LayerNormalization(nn.Module):
+    def __init__(self, features: int, eps: float = 10** - 6) -> None:
+        super().__init__()
+        self.eps = eps
+        self.alpha = nn.Parameter(torch.ones(features))
+        self.bias = nn.Parameter(torch.zeros(features))
+
+    def forward(self, x):
+        # x: (batch, seq_len, hidden_size)
+        std = x.std(dims = -1, keepdim = True) # (batch, seq_len, 1)
+        mean = x.mean(dims = -1, keepdim = True) # (batch, seq_len, 1)
+        return self.alpha * (x - mean) / (std + self.eps) + self.bias
+
+
 if __name__ == "__main__":
-    model = PositionalEncoding(
-        d_model=4,
-        seq_length=3,
-        dropout=0.0
-    )
-
-    angles = model.position * model.div_term
-
-    print("Position:")
-    print(model.position)
-
-    print("\nDiv term:")
-    print(model.div_term)
-
-    print("\nPosition × div_term:")
-    print(angles)
-    print("Shape:", angles.shape)
-    d_model = 4
-    seq_length = 3
-    dropout = 0.0
-    positional_encoding = PositionalEncoding(
-        d_model=d_model,
-        seq_length=seq_length,
-        dropout=dropout
-    )
-
-    # Fake embeddings:
-    # batch_size=1, seq_length=3, d_model=4
-    x = torch.zeros(1, seq_length, d_model)
-
-    output = positional_encoding(x)
-
-    print("\nFinal output:")
-    print(output)
-
-    print("\nFinal output shape:")
-    print(output.shape)
+    model = PositionalEncoding(d_model=10, seq_length=10, dropout=0.0)
+    print(model.pe)
