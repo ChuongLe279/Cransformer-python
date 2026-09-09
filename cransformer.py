@@ -35,7 +35,32 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         x = x + self.pe[:, :x.size(1), :] # type: ignore (batch_size, seq_len, d_model)
         return self.dropout(x)
-    
+
+class AddNorm(nn.Module):
+    def __init__(self, d_model: int, dropout: float) -> None:
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x, sublayer):
+        return self.norm(x + self.dropout(sublayer)) # (batch_size, seq_len, d_model)
+
+class FeedForward(nn.Module):
+    """
+    Input:  # (batch_size, seq_len, d_model)
+    First Linear: # (batch_size, seq_len, 2048)
+    ReLu: # (batch_size, seq_len, 2048)
+    Second Linear: # (batch_size, seq_len, d_model)
+    """
+    def __init__(self, d_model: int, dff: int = 2048, dropout: float = 0.1) -> None:        
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.linear_1 = nn.Linear(d_model, dff)     
+        self.linear_2 = nn.Linear(dff, d_model)   
+
+    def forward(self, x):
+        return self.linear_2(self.dropout(self.linear_1(x)))
+
 if __name__ == "__main__":
     d_model = 2
     vocab_size = 3
