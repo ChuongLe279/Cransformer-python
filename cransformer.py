@@ -1,5 +1,3 @@
-from typing import Any
-
 import torch
 import torch.nn as nn
 import math
@@ -84,25 +82,40 @@ class MultiHeadAttention(nn.Module):
         self.w_q = nn.Linear(d_model, d_model, bias=False)
         self.w_k = nn.Linear(d_model, d_model, bias=False)
         self.w_v = nn.Linear(d_model, d_model, bias=False)
+        self.w_0 = nn.Linear(d_model, d_model, bias=False)
 
-        @staticmethod
-        def attention(query, key, value):
-            attention = torch.softmax(query * key.T / torch.sqrt(self.d_k)) * value
-            return attention
 
-    def forward(self, q, k, v):
+    @staticmethod
+    def attention(query, key, value, mask, dropout: nn.Dropout):
+        d_k = query.shape[-1]
+
+        # (batch, h, seq_len, d_k) --> (batch, h, seq_len, seq_len)
+        attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
+
+        if mask is not None:
+            attention_scores.masked_fill_(mask == 0, -1e9)
+        if dropout is not None:
+            attention_scores = dropout(attention_scores)
+
+        return (attention_scores @ value), attention_scores
+
+    def forward(self, q, k, v, mask):
         query = self.w_q(q) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
         key = self.w_k(k) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
         value = self.w_v(v) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
 
         # (batch, seq_len, d_model) --> (batch, seq_len, h, d_k) --> (batch, h, seq_len, d_k)
-        query = query.view(query.shape[0], query.shape[1], self.h, self.d_k).transpose(1, 2)
-        key = key.view(key.shape[0], key.shape[1], self.h, self.d_k).transpose(1, 2)
-        value = value.view(value.shape[0], value.shape[1], self.h, self.d_k).transpose(1, 2)
+        query = query.view(query.shape[0], query.shape[1], self.head, self.d_k).transpose(1,2)
+        key = key.view(key.shape[0], key.shape[1], self.head, self.d_k).transpose(1,2)
+        value = value.view(value.shape[0], value.shape[1], self.head, self.d_k).transpose(1,2)
 
+        # calculate attention
+        x, self.attention_scores = MultiHeadAttention.attention(query, key, value, mask, self.dropout)
 
+        # Combine all heads together
+        x = x.transpose(1, 2).contiguous().view(x.shape[0], -1, self.head * self.d_k)
 
-
+        return self.w_0(x)
 
 if __name__ == "__main__":
     d_model = 2
