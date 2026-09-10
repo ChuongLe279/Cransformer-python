@@ -61,6 +61,49 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.linear_2(self.dropout(self.linear_1(x)))
 
+class Linear(nn.Module):
+
+    def __init__(self, d_model, vocab_size) -> None:
+        super().__init__()
+        self.linear = nn.Linear(d_model, vocab_size)
+
+    def forward(self, x) -> None:
+        # (batch, seq_len, d_model) --> (batch, seq_len, vocab_size)
+        return self.linear(x)
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model: int, head: int, dropout: float) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.head = head
+        self.dropout = nn.Dropout(dropout)
+
+        assert self.d_model % self.head == 0, "d_model must be divisible by head"
+
+        self.d_k = d_model // head
+        self.w_q = nn.Linear(d_model, d_model, bias=False)
+        self.w_k = nn.Linear(d_model, d_model, bias=False)
+        self.w_v = nn.Linear(d_model, d_model, bias=False)
+
+        @staticmethod
+        def attention(query, key, value):
+            attention = torch.softmax(query * key.T / torch.sqrt(self.d_k)) * value
+            return attention
+
+    def forward(self, q, k, v):
+        query = self.w_q(q) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
+        key = self.w_k(k) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
+        value = self.w_v(v) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
+
+        # (batch, seq_len, d_model) --> (batch, seq_len, h, d_k) --> (batch, h, seq_len, d_k)
+        query = query.view(query.shape[0], query.shape[1], self.h, self.d_k).transpose(1, 2)
+        key = key.view(key.shape[0], key.shape[1], self.h, self.d_k).transpose(1, 2)
+        value = value.view(value.shape[0], value.shape[1], self.h, self.d_k).transpose(1, 2)
+
+
+
+
+
 if __name__ == "__main__":
     d_model = 2
     vocab_size = 3
