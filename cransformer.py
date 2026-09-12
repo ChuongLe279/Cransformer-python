@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 import torch.nn as nn
 import math
@@ -34,14 +36,22 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:, :x.size(1), :] # type: ignore (batch_size, seq_len, d_model)
         return self.dropout(x)
 
-class AddNorm(nn.Module):
-    def __init__(self, d_model: int, dropout: float) -> None:
-        super().__init__()
-        self.dropout = nn.Dropout(dropout)
-        self.norm = nn.LayerNorm(d_model)
+class LayerNormalization(nn.Module):
 
-    def forward(self, x, sublayer):
-        return self.norm(x + self.dropout(sublayer)) # (batch_size, seq_len, d_model)
+    def __init__(self, features: int, eps:float=10**-6) -> None:
+        super().__init__()
+        self.eps = eps
+        self.alpha = nn.Parameter(torch.ones(features)) # alpha is a learnable parameter
+        self.bias = nn.Parameter(torch.zeros(features)) # bias is a learnable parameter
+
+    def forward(self, x):
+        # x: (batch, seq_len, hidden_size)
+         # Keep the dimension for broadcasting
+        mean = x.mean(dim = -1, keepdim = True) # (batch, seq_len, 1)
+        # Keep the dimension for broadcasting
+        std = x.std(dim = -1, keepdim = True) # (batch, seq_len, 1)
+        # eps is to prevent dividing by zero or when std is very small
+        return self.alpha * (x - mean) / (std + self.eps) + self.bias
 
 class FeedForward(nn.Module):
     """
@@ -59,15 +69,15 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.linear_2(self.dropout(self.linear_1(x)))
 
-class Linear(nn.Module):
-
-    def __init__(self, d_model, vocab_size) -> None:
+class ResidualConnection(nn.Module):
+    
+    def __init__(self, features: int, dropout: float) -> None:
         super().__init__()
-        self.linear = nn.Linear(d_model, vocab_size)
+        self.dropout = nn.Dropout(dropout)
+        self.norm = LayerNormalization(features)
 
-    def forward(self, x) -> None:
-        # (batch, seq_len, d_model) --> (batch, seq_len, vocab_size)
-        return self.linear(x)
+    def forward(self, x, sublayer):
+        return x + self.dropout(sublayer(self.norm(x)))
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model: int, head: int, dropout: float) -> None:
@@ -89,11 +99,13 @@ class MultiHeadAttention(nn.Module):
     def attention(query, key, value, mask, dropout: nn.Dropout):
         d_k = query.shape[-1]
 
-        # (batch, h, seq_len, d_k) --> (batch, h, seq_len, seq_len)
+        # (batch, h, seq_len, d_k) --> (batch, head, seq_len, seq_len)
         attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
 
         if mask is not None:
-            attention_scores.masked_fill_(mask == 0, -1e9)
+            attention_scores.masked_fill_(mask == 0, value = -1e9)
+        attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax
+
         if dropout is not None:
             attention_scores = dropout(attention_scores)
 
@@ -113,9 +125,74 @@ class MultiHeadAttention(nn.Module):
         x, self.attention_scores = MultiHeadAttention.attention(query, key, value, mask, self.dropout)
 
         # Combine all heads together
+        """
+        x = x.transpose(1,2)
+        (batch, head, seq_len, d_k) -> (batch, seq_len, head, d_k)
+        .contigous() # usually used before view
+        arranges the tensor's data contiguously in memory after the transpose, so .view() can reshape it.
+        -1: figure out the dimension for me while keeping the total number of elements the same.
+        """
         x = x.transpose(1, 2).contiguous().view(x.shape[0], -1, self.head * self.d_k)
 
         return self.w_0(x)
+
+class MultiHeadAttentionBlock(nn.Module):
+    def __init__(self, d_model: int, head: int, dropout: float) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.head = head
+        self.dropout = nn.Dropout(dropout)
+
+        self.d_k = d_model // head
+        assert self.d_k % self.head == 0, "d_k must be divisible by number of heads"
+
+        self.w_q = nn.Linear(d_model, d_model, bias=False)
+        self.w_k = nn.Linear(d_model, d_model, bias=False)
+        self.w_v = nn.Linear(d_model, d_model, bias=False)
+        self.w_o = nn.Linear(d_model, d_model, bias=False)
+
+    @staticmethod
+    def attention(query, key, value, mask, dropout: nn.Dropout):
+        d_k = query.shape[-1]
+
+        attention_scores = (query @ key.transpose(-1, -2)) / math.sqrt(d_k)
+
+        if mask is not None:
+            attention_scores.masked_fill_(mask == 0, value = -1e9)
+        attention_scores = attention_scores.softmax(dim=-1)
+
+        if dropout is not None:
+            attention_scores = dropout(attention_scores)
+        
+        return (attention_scores @ value), attention_scores
+
+    def forward(self, q, k, v, mask):
+        query = self.w_q(q)
+        key = self.w_k(k)
+        value = self.w_v(v)
+
+        query = query.view(query.shape[0], query.shape[1], self.head, self.d_k).transpose(1,2)
+        key = key.view(key.shape[0], key.shape[1], self.head, self.d_k).transpose(1,2)
+        value = value.view(value.shape[0], value.shape[1], self.head, self.d_k).transpose(1,2)
+
+        x, self.attention_scores = MultiHeadAttentionBlock.attention(query, key, value, mask, self.dropout)
+
+        x = x.transpose(1,2).contiguous().view(x.shape[0], -1, self.head * self.d_k)
+        
+        return self.w_o(x)
+
+class EncoderBlock(nn.Module):
+
+    def __init__(self, features: int, self_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock, dropout: float) -> None:
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.feed_forward_block = feed_forward_block
+        self.residual_connections = nn.ModuleList([ResidualConnection(features, dropout) for _ in range(2)])
+
+    def forward(self, x, src_mask):
+        x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, src_mask))
+        x = self.residual_connections[1](x, self.feed_forward_block)
+        return x
 
 if __name__ == "__main__":
     d_model = 2
